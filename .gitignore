@@ -1,0 +1,33 @@
+# General
+.DS_Store
+.vscode/
+*.log
+tmp/
+
+# Go
+# Binaries
+main
+*.exe
+*.test
+*.out
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+dist/
+build/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+*.egg-info/
+
+# Configuration
+app.toml

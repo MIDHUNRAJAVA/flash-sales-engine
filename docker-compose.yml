@@ -1,0 +1,121 @@
+version: '3.8'
+
+services:
+  # --- Message Broker ---
+  # --- Application Services ---
+  gateway:
+    build: ./gateway-service
+    ports:
+      - "3000:3000"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - INVENTORY_SERVICE_URL=http://inventory:8080/buy
+    depends_on:
+      - redis
+      - inventory
+    networks:
+      - flash-sale-net
+
+  inventory:
+    build: ./inventory-service
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      - redis
+      - nats
+    networks:
+      - flash-sale-net
+
+  order-service:
+    build: ./order-service
+    environment:
+      - NATS_URL=nats://nats:4222
+      - DB_HOST=postgres
+      - DB_NAME=flashsale
+      - DB_USER=user
+      - DB_PASS=password
+    depends_on:
+      - nats
+      - postgres
+    networks:
+      - flash-sale-net
+
+  # --- Infrastructure ---
+  nats:
+    image: nats:latest
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: "-js -m 8222" # Enable JetStream and Monitoring
+    networks:
+      - flash-sale-net
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - flash-sale-net
+
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: flashsale
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - flash-sale-net
+
+  mongo:
+    image: mongo:6.0
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: user
+      MONGO_INITDB_ROOT_PASSWORD: password
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - flash-sale-net
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - flash-sale-net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.1
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - flash-sale-net
+    depends_on:
+      - elasticsearch
+
+networks:
+  flash-sale-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mongo_data:
+  es_data:
