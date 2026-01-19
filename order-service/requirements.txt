@@ -1,3 +1,6 @@
 nats-py
-asyncio
-psycopg2-binary
+asyncpg
+pylogrus
+pydantic-settings
+pydantic
+python-dotenv
