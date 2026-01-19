@@ -17,7 +17,7 @@ This system consists of three core microservices communicating through Redis and
    │Redis│              │   Redis   │            │  PostgreSQL │
    └─────┘              └───────────┘            └─────────────┘
   (Rate                 (Inventory)                  (Orders)
-   Limit)                                      
+   Limit)
                         ┌───────────┐
                         │   NATS    │
                         │ (Message  │
