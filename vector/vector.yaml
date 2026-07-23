@@ -1,0 +1,50 @@
+# Vector (Rust core): end-to-end acked delivery — a line leaves the local buffer
+# only after Loki confirms it, so a Loki blip buffers rather than drops.
+data_dir: /var/lib/vector
+
+sources:
+  docker:
+    type: docker_logs
+    include_labels:
+      - "com.docker.compose.service=gateway"
+      - "com.docker.compose.service=inventory"
+      - "com.docker.compose.service=order-service"
+
+transforms:
+  # Parse the JSON each service already emits; drop non-JSON (startup banners).
+  parse:
+    type: remap
+    inputs: [docker]
+    source: |
+      structured, err = parse_json(.message)
+      if err != null { abort }
+      . = merge(., structured)
+
+  # Defense-in-depth PII scrub at the pipeline edge: even if a call site forgets,
+  # nothing raw reaches storage. user_id must already be a sha256: prefix.
+  scrub:
+    type: remap
+    inputs: [parse]
+    source: |
+      if exists(.user_id) && !starts_with(to_string(.user_id) ?? "", "sha256:") {
+        .user_id = "sha256:" + sha2(to_string(.user_id), variant: "SHA-256")
+      }
+      del(.email); del(.name); del(.authorization); del(.password)
+
+sinks:
+  loki:
+    type: loki
+    inputs: [scrub]
+    endpoint: http://loki:3100
+    encoding:
+      codec: json
+    # Bounded label cardinality — trace_id/request_id stay in the body.
+    labels:
+      service: "{{ service }}"
+      level: "{{ level }}"
+      event: "{{ event }}"
+    out_of_order_action: accept
+    buffer:
+      type: disk
+      max_size: 268435488   # 256MB local buffer absorbs a Loki outage
+      when_full: block

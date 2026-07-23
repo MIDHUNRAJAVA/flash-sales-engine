@@ -1,0 +1,37 @@
+# PagerDuty routing by severity. Replace the placeholder keys with real
+# integration keys before a sale; the routing tree is production-shaped.
+route:
+  receiver: default
+  group_by: ['alertname', 'severity']
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="P1"]
+      receiver: pagerduty-p1
+      group_wait: 0s
+    - matchers: [severity="P2"]
+      receiver: pagerduty-p2
+    - matchers: [severity="P3"]
+      receiver: slack-p3
+
+receivers:
+  - name: default
+  - name: pagerduty-p1
+    pagerduty_configs:
+      - routing_key: "REPLACE_WITH_PD_P1_INTEGRATION_KEY"
+        severity: critical
+  - name: pagerduty-p2
+    pagerduty_configs:
+      - routing_key: "REPLACE_WITH_PD_P2_INTEGRATION_KEY"
+        severity: error
+  - name: slack-p3
+    slack_configs:
+      - api_url: "REPLACE_WITH_SLACK_WEBHOOK_URL"
+        channel: "#flash-sale-alerts"
+
+inhibit_rules:
+  # A P1 for a service mutes its lower-severity noise.
+  - source_matchers: [severity="P1"]
+    target_matchers: [severity=~"P2|P3"]
+    equal: ['alertname']

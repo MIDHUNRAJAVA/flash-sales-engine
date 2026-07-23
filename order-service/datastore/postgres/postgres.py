@@ -1,8 +1,19 @@
 import asyncpg
+import pybreaker
 from config.config import Config
 from utils.logger import get_logger
+from utils import metrics
 
 logger = get_logger()
+
+# Opens after 10 consecutive-ish failures; while OPEN, calls raise
+# CircuitBreakerError immediately instead of piling onto a struggling pool.
+# reset_timeout=5 lets one trial request through to probe recovery.
+db_breaker = pybreaker.CircuitBreaker(fail_max=10, reset_timeout=5, name="postgres")
+
+
+def _reraise(exc):
+    raise exc
 
 class PostgresClient:
     def __init__(self, config: Config):
@@ -39,17 +50,37 @@ class PostgresClient:
                 )
             """)
 
+    async def _do_insert(self, order):
+        await self.pool.execute("""
+            INSERT INTO orders (order_id, user_id, product_id, quantity, status)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (order_id) DO NOTHING
+        """, order.order_id, order.user_id, order.product_id, order.quantity, order.status)
+
     async def insert_order(self, order):
+        # NOTE: pybreaker.call_async is Tornado-only (@gen.coroutine); with no
+        # Tornado installed it raises NameError('gen'). We instead drive the
+        # breaker's state machine with its synchronous .call() sentinels so
+        # open/close still works around this async DB call.
+        if db_breaker.current_state == pybreaker.STATE_OPEN:
+            # Open -> transient: handler naks (requeue), not a permanent failure.
+            metrics.postgres_errors.labels(type="breaker_open").inc()
+            raise pybreaker.CircuitBreakerError("postgres breaker open")
         try:
-            await self.pool.execute("""
-                INSERT INTO orders (order_id, user_id, product_id, quantity, status)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (order_id) DO NOTHING
-            """, order.order_id, order.user_id, order.product_id, order.quantity, order.status)
-            return True
+            await self._do_insert(order)
         except Exception as e:
-            logger.error(f"Failed to insert order {order.order_id}: {e}")
+            try:
+                db_breaker.call(_reraise, e)  # count the failure toward tripping
+            except Exception:
+                pass
+            metrics.postgres_errors.labels(type="query_error").inc()
+            logger.error("db_insert_failed", order_id=order.order_id, error=str(e))
             return False
+        try:
+            db_breaker.call(lambda: None)     # count success (closes half-open)
+        except pybreaker.CircuitBreakerError:
+            pass
+        return True
 
     async def close(self):
         if self.pool:

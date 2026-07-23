@@ -9,53 +9,63 @@
  * Reproduction or distribution, in whole or in part, is forbidden except by express written permission of ConverSight.ai.
 
 """
-from logging import Logger
-from pylogrus import TextFormatter,JsonFormatter, PyLogrus
 import logging
 import os
 
-# Default log level
-log_level = "INFO"
+import structlog
+from opentelemetry import trace
 
-logger = Logger(__name__)
-if os.getenv("LOG_LEVEL") is not None:
-    log_level = os.getenv("LOG_LEVEL")
-level = logging.getLevelName(log_level)
+SERVICE = "order-service"
+VERSION = os.getenv("SERVICE_VERSION", "unknown")
 
 
-logging.setLoggerClass(PyLogrus)
-logger = logging.getLogger(__name__)  # type: PyLogrus
+def _add_service(_logger, _method, event_dict):
+    event_dict["service"] = SERVICE
+    event_dict["version"] = VERSION
+    return event_dict
 
-if not logger.handlers:
 
-    # reduce log level
-    # logging.getLogger("pika").setLevel(logging.WARNING)
-    # or, disable propagation
-    # logging.getLogger("pika").propagate = False
+def _add_trace_context(_logger, _method, event_dict):
+    ctx = trace.get_current_span().get_span_context()
+    if ctx and ctx.is_valid:
+        event_dict["trace_id"] = format(ctx.trace_id, "032x")
+        event_dict["span_id"] = format(ctx.span_id, "016x")
+    return event_dict
 
-    logger.setLevel(level)
 
-    enabled_fields = [
-            'asctime',
-            'levelname',
-            'message',
-            'name'
-        ]
+_configured = False
 
-    # Use JSON Formatter for production
-    formatter = JsonFormatter(datefmt='Z', enabled_fields=enabled_fields, sort_keys=True)
-    formatter.override_level_names({'CRITICAL': 'FATAL', 'WARNING': 'WARN'})
 
-    ch = logging.StreamHandler()
-    ch.setLevel(level)
-    ch.setFormatter(formatter)
+def _configure():
+    global _configured
+    if _configured:
+        return
+    level = logging.getLevelName(os.getenv("LOG_LEVEL", "INFO"))
+    if not isinstance(level, int):
+        level = logging.INFO
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            _add_service,
+            _add_trace_context,
+            structlog.processors.TimeStamper(fmt="iso", key="ts"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(level),
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+    _configured = True
 
-    logger.addHandler(ch)
-    logger.propagate = False
+
+_configure()
 
 
 def get_logger():
-    return logger
+    return structlog.get_logger()
 
 
 def get_info(msg, args=""):

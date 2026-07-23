@@ -1,115 +1,258 @@
-version: '3.8'
-
 services:
-  # --- Message Broker ---
-  # --- Application Services ---
+
+  # ── Edge ──────────────────────────────────────────────────────────────────────
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - gateway
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+  # ── Application Services ─────────────────────────────────────────────────────
+
   gateway:
     build: ./gateway-service
     ports:
       - "3000:3000"
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      # Rate limiter gets its OWN Redis (Bug 3): abuse absorbed there can
+      # never starve the stock counter.
+      - REDIS_RL_HOST=redis-ratelimit
+      - REDIS_RL_PORT=6379
+      - REDIS_QUEUE_HOST=redis-ratelimit
+      - REDIS_QUEUE_PORT=6379
       - INVENTORY_SERVICE_URL=http://inventory:8080/buy
+      - NATS_URL=nats://nats:4222
+      - BUY_WINDOW_SECONDS=10
+      - BUY_WINDOW_MAX=1
+      - MAX_INFLIGHT_BUY=5000
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=gateway
+      - SERVICE_VERSION=1.0.0
     depends_on:
-      - redis
-      - inventory
+      redis-ratelimit:
+        condition: service_healthy
+      inventory:
+        condition: service_healthy
     networks:
       - flash-sale-net
+    restart: unless-stopped
 
   inventory:
     build: ./inventory-service
     ports:
       - "8080:8080"
     environment:
-      - REDIS_HOST=redis
+      - REDIS_HOST=redis-stock
       - REDIS_PORT=6379
       - NATS_URL=nats://nats:4222
+      - MAX_PER_USER=2
+      - OTEL_EXPORTER_OTLP_ENDPOINT=otel-collector:4317
+      - OTEL_SERVICE_NAME=inventory
+      - SERVICE_VERSION=1.0.0
     depends_on:
-      - redis
-      - nats
+      redis-stock:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
     networks:
       - flash-sale-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
   order-service:
     build: ./order-service
     environment:
       - NATS_URL=nats://nats:4222
+      - REDIS_HOST=redis-stock
+      - REDIS_PORT=6379
       - DB_HOST=postgres
-      - DB_NAME=flashsale
-      - DB_USER=user
-      - DB_PASS=password
+      - DB_PORT=5432
+      - DB_NAME=${POSTGRES_DB:-flashsale}
+      - DB_USER=${POSTGRES_USER:-flashsale_user}
+      - DB_PASS=${POSTGRES_PASSWORD:-change_me}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=order-service
+      - SERVICE_VERSION=1.0.0
     depends_on:
-      - nats
-      - postgres
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis-stock:
+        condition: service_healthy
     networks:
       - flash-sale-net
+    restart: unless-stopped
 
-  # --- Infrastructure ---
+  # ── Infrastructure ────────────────────────────────────────────────────────────
+
   nats:
-    image: nats:latest
+    image: nats:2.10-alpine
     ports:
       - "4222:4222"
-      - "8222:8222"
-    command: "-js -m 8222" # Enable JetStream and Monitoring
+      - "8222:8222"   # NATS monitoring
+    command: "-js -sd /data -m 8222"   # file storage: acked orders survive restarts
+    volumes:
+      - nats_data:/data
     networks:
       - flash-sale-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
-  redis:
-    image: redis:alpine
+  # Stock counter + reservation state: AOF so a restart can't forget a sale.
+  redis-stock:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --appendfsync everysec
     ports:
       - "6379:6379"
     networks:
       - flash-sale-net
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Rate-limit counters: bounded memory, noeviction — under pressure the
+  # limiter fails LOUD (gateway sheds 503) instead of silently evicting
+  # counters and letting everything through.
+  redis-ratelimit:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 512mb --maxmemory-policy noeviction
+    networks:
+      - flash-sale-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
   postgres:
     image: postgres:15-alpine
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: flashsale
+      POSTGRES_USER: ${POSTGRES_USER:-flashsale_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-flashsale}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - flash-sale-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flashsale_user} -d ${POSTGRES_DB:-flashsale}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  mongo:
-    image: mongo:6.0
+  # ── Observability ─────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
     ports:
-      - "27017:27017"
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: user
-      MONGO_INITDB_ROOT_PASSWORD: password
+      - "9090:9090"
     volumes:
-      - mongo_data:/data/db
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=7d'
     networks:
       - flash-sale-net
+    restart: unless-stopped
 
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+  alertmanager:
+    image: prom/alertmanager:latest
     ports:
-      - "9200:9200"
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - "9093:9093"
     volumes:
-      - es_data:/usr/share/elasticsearch/data
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     networks:
       - flash-sale-net
+    restart: unless-stopped
 
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.11.1
+  grafana:
+    image: grafana/grafana:latest
     ports:
-      - "5601:5601"
+      - "3001:3000"
     environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
     networks:
       - flash-sale-net
     depends_on:
-      - elasticsearch
+      - prometheus
+    restart: unless-stopped
+
+  # ── Tracing + Logs ──────────────────────────────────────────────────────────
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel/collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "8889:8889"   # spanmetrics for Prometheus
+    networks:
+      - flash-sale-net
+    depends_on:
+      - tempo
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.5.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.1.0
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    networks:
+      - flash-sale-net
+    restart: unless-stopped
+
+  vector:
+    image: timberio/vector:0.39.0-alpine
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - vector_data:/var/lib/vector
+    networks:
+      - flash-sale-net
+    depends_on:
+      - loki
+    restart: unless-stopped
 
 networks:
   flash-sale-net:
@@ -117,5 +260,10 @@ networks:
 
 volumes:
   postgres_data:
-  mongo_data:
-  es_data:
+  redis_data:
+  nats_data:
+  tempo_data:
+  loki_data:
+  vector_data:
+  prometheus_data:
+  grafana_data:

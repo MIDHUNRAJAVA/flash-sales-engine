@@ -5,13 +5,10 @@
 tmp/
 
 # Go
-# Binaries
 main
 *.exe
 *.test
 *.out
-# Dependency directories (remove the comment below to include it)
-# vendor/
 
 # Node.js
 node_modules/
@@ -19,7 +16,6 @@ npm-debug.log
 yarn-error.log
 dist/
 build/
-.env
 
 # Python
 __pycache__/
@@ -29,5 +25,18 @@ venv/
 .venv/
 *.egg-info/
 
-# Configuration
+# Environment — never commit real credentials
+.env
+*.env
+!.env.example
 app.toml
+!app.toml.example
+
+# Grafana runtime data
+grafana/data/
+
+# k6 results
+k6-results/
+
+# native local-run state (scripts/run-local.sh)
+.run/

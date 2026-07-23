@@ -1,6 +1,13 @@
 nats-py
 asyncpg
-pylogrus
 pydantic-settings
 pydantic
 python-dotenv
+redis
+prometheus-client
+structlog
+pybreaker
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-instrumentation-asyncpg

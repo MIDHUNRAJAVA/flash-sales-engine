@@ -4,13 +4,23 @@ import (
 	"inventory-service/config"
 	"inventory-service/datastore/nats"
 	"inventory-service/datastore/redis"
+	"inventory-service/logging"
 	"log/slog"
 	"os"
 )
 
 func InitDependencies() (*config.Config, func(), error) {
-	// 1. Setup Logger
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	// 1. Setup Logger: JSON handler wrapped so trace_id/span_id are lifted from
+	// context, plus canonical service/version fields on every line.
+	serviceName := os.Getenv("OTEL_SERVICE_NAME")
+	if serviceName == "" {
+		serviceName = "inventory"
+	}
+	handler := logging.New(slog.NewJSONHandler(os.Stdout, nil)).WithAttrs([]slog.Attr{
+		slog.String("service", serviceName),
+		slog.String("version", os.Getenv("SERVICE_VERSION")),
+	})
+	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
 	// 2. Load Config

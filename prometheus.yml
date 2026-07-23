@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 10s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  - job_name: gateway
+    static_configs:
+      - targets: ['gateway:3000']
+    metrics_path: /metrics
+
+  - job_name: inventory-service
+    static_configs:
+      - targets: ['inventory:8080']
+    metrics_path: /metrics
+
+  - job_name: order-service
+    static_configs:
+      - targets: ['order-service:9100']
+    metrics_path: /metrics
+
+  - job_name: nats
+    static_configs:
+      - targets: ['nats:8222']
+    metrics_path: /metrics
+
+  # Trace-derived span metrics (histograms) from the OTel Collector.
+  - job_name: otel-spanmetrics
+    static_configs:
+      - targets: ['otel-collector:8889']
