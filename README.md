@@ -1,5 +1,9 @@
 # Flash-Sale Engine
 
+[![CI](https://github.com/MIDHUNRAJAVA/flash-sales-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/MIDHUNRAJAVA/flash-sales-engine/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+
 A production-grade flash-sale engine: hundreds of thousands of buyers stampede a tiny stock (e.g. 2000 units) in the same second, and the system holds a **hard zero-oversell invariant** — stock can never go below zero, an accepted order is never silently lost, a duplicate request never produces a second order, and every buyer gets a *defined* response (never a hang, never a 500 for a policy decision). Every correctness decision is collapsed into one atomic Redis Lua script, the message leg is made durable with JetStream PubAck + dedup + compensating transactions, and the hot path is fronted by four layers of admission control so at most a few thousand req/s ever reach the stock counter.
 
 The full engineering rationale — every trade-off, failure scenario, and phase gate — lives in [`docs/production-plan.md`](docs/production-plan.md). This README is the operational summary.
