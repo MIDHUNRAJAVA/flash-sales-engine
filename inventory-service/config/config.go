@@ -21,10 +21,10 @@ type Config struct {
 
 // SaleConfig freezes sale parameters at startup — deliberately not runtime-mutable.
 type SaleConfig struct {
-	MaxPerUser int `toml:"max_per_user"` // per-user quantity cap
-	IdemTTLSec int `toml:"idem_ttl_s"`   // idempotency key TTL; must exceed the redelivery chain
-	ResvTTLSec int `toml:"resv_ttl_s"`   // reservation TTL; must exceed max_deliver x ack_wait
-	QuotaTTLSec int `toml:"quota_ttl_s"` // per-user purchase counter TTL
+	MaxPerUser  int `toml:"max_per_user"` // per-user quantity cap
+	IdemTTLSec  int `toml:"idem_ttl_s"`   // idempotency key TTL; must exceed the redelivery chain
+	ResvTTLSec  int `toml:"resv_ttl_s"`   // reservation TTL; must exceed max_deliver x ack_wait
+	QuotaTTLSec int `toml:"quota_ttl_s"`  // per-user purchase counter TTL
 }
 
 type ServerConfig struct {
